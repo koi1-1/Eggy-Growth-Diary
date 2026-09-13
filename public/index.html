@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#8B7BD8">
+  <title>蛋养学习 · 知乎黑客松</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- ===== 开屏：EARTH ONLINE（参考 design/7.png）=====
+       ENTER 后进蛋墙；同一会话只出现一次（sessionStorage 记 dy-splash-done） -->
+  <section id="view-splash" class="view splash active">
+    <span class="px-star px-star--1" aria-hidden="true"></span>
+    <span class="px-star px-star--2" aria-hidden="true"></span>
+    <span class="px-star px-star--3" aria-hidden="true"></span>
+    <span class="px-cloud px-cloud--sky" aria-hidden="true"></span>
+
+    <div class="splash-monitor">
+      <div class="splash-screen">
+        <span class="px-cloud px-cloud--1" aria-hidden="true"></span>
+        <span class="px-cloud px-cloud--2" aria-hidden="true"></span>
+        <h1 class="splash-title">EARTH<br>ONLINE</h1>
+        <button class="splash-enter" id="btn-enter" type="button">ENTER</button>
+        <span class="px-hills" aria-hidden="true"></span>
+      </div>
+    </div>
+
+    <!-- 像素猫由 JS 注入（catSVG） -->
+    <div class="splash-cats" id="splash-cats" aria-hidden="true"></div>
+    <span class="splash-page" aria-hidden="true">1/6</span>
+  </section>
+
+  <!-- ===== 视图 1：蛋气泡墙（参考 design/6.png 第一屏）===== -->
+  <section id="view-wall" class="view">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-dot" aria-hidden="true"></span>
+        <span class="brand-name">蛋养学习</span>
+      </div>
+      <div class="user-chip">
+        <span class="avatar" id="user-avatar"></span>
+        <span class="user-name" id="user-name">小夏</span>
+        <button class="btn-logout hidden" id="btn-logout" type="button">退出</button>
+      </div>
+    </header>
+
+    <div class="wall-body">
+      <h1 class="wall-title">你的兴趣蛋</h1>
+      <p class="wall-sub">根据你的知乎收藏聚类而成，点一个气泡领养它</p>
+      <div class="bubble-cloud" id="bubble-cloud">
+        <!-- 气泡由 JS 渲染 -->
+      </div>
+      <p class="wall-hint">收藏越多，蛋越多 · 去知乎多收藏</p>
+    </div>
+  </section>
+
+  <!-- ===== 视图 2：领养成功（弹层，参考 design/6.png 第二屏）===== -->
+  <div id="view-adopt" class="view overlay">
+    <div class="adopt-card">
+      <h2 class="adopt-title">【恭喜您领养成功！】</h2>
+      <div class="adopt-egg" id="adopt-egg"></div>
+      <p class="adopt-theme" id="adopt-theme">Python 编程</p>
+      <p class="adopt-desc" id="adopt-desc">这颗蛋将陪你一起学习成长</p>
+      <button class="btn btn-primary btn-block" id="btn-start-learn">好的</button>
+    </div>
+  </div>
+
+  <!-- ===== 视图 3：蛋的知识点主页（参考 design/6.png 第三屏）===== -->
+  <section id="view-egg" class="view">
+    <header class="topbar">
+      <button class="back-btn" data-back="wall">‹ 返回</button>
+      <span class="topbar-icon" aria-hidden="true">🏠</span>
+      <span class="topbar-title">我的宠物</span>
+      <!-- 金币固定右上角，不随内容滚动 -->
+      <div class="coin-box">
+        <span class="coin-icon" aria-hidden="true">🪙</span>
+        <span class="coin-value" id="egg-coins">0</span>
+        <span class="sr-only">金币</span>
+        <span class="coin-level" id="egg-level">Lv.1</span>
+        <button class="coin-exchange" id="btn-exchange" type="button">兑换</button>
+      </div>
+    </header>
+
+    <!-- 板块①：蛋展示 + 喂养 -->
+    <div class="egg-stage">
+      <div class="stage-egg-wrap">
+        <p class="stage-theme" id="egg-stage-theme">Python 编程</p>
+        <div class="stage-egg" id="stage-egg"></div>
+      </div>
+      <div class="side-actions">
+        <button class="side-action" id="btn-feed-apple" title="喂苹果">
+          <span class="side-icon">🍎</span>
+          <span class="side-label">苹果</span>
+          <span class="side-count" id="count-apple">3</span>
+        </button>
+        <button class="side-action" id="btn-feed-water" title="喂水">
+          <span class="side-icon">💧</span>
+          <span class="side-label">喂水</span>
+          <span class="side-count" id="count-water">2</span>
+        </button>
+        <button class="side-action" id="btn-dress" title="换装">
+          <span class="side-icon">🎨</span>
+          <span class="side-label">换装</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- 成长进度 -->
+    <div class="growth-bar-wrap">
+      <div class="growth-bar"><div class="growth-fill" id="growth-fill"></div></div>
+      <span class="growth-text" id="growth-text">成长值 0 / 100</span>
+    </div>
+
+    <!-- 板块②③④：今天要做什么（4 个像素气泡，参考 design/6.png 第三屏） -->
+    <div class="todo-block">
+      <h2 class="todo-title">今天要做什么？</h2>
+      <div class="todo-grid">
+        <button class="todo-bubble todo-bubble--wide todo-bubble--course" id="btn-todo-course" type="button">
+          <span class="todo-icon" aria-hidden="true">📖</span>
+          <span class="todo-label">课程</span>
+          <span class="todo-sub" id="course-entry-desc">6 节课的学习计划</span>
+        </button>
+        <button class="todo-bubble todo-bubble--wide todo-bubble--review" id="btn-todo-review" type="button">
+          <span class="todo-icon" aria-hidden="true">🧠</span>
+          <span class="todo-label">复习</span>
+          <span class="todo-sub">3 道选择题，每答对 1 题得 10 金币</span>
+        </button>
+        <button class="todo-bubble todo-bubble--half todo-bubble--badge" id="btn-todo-badge" type="button">
+          <span class="todo-icon" aria-hidden="true">🏅</span>
+          <span class="todo-label">徽章</span>
+        </button>
+        <button class="todo-bubble todo-bubble--half todo-bubble--explore" id="btn-todo-explore" type="button">
+          <span class="todo-icon" aria-hidden="true">🧭</span>
+          <span class="todo-label">探索</span>
+        </button>
+      </div>
+
+      <div class="section-panel hidden" id="panel-badge">
+        <div class="placeholder">
+          <span class="placeholder-icon">🏅</span>
+          <p>徽章墙<br><small>完成学习解锁徽章（开发中）</small></p>
+        </div>
+      </div>
+      <div class="section-panel hidden" id="panel-explore">
+        <div class="placeholder">
+          <span class="placeholder-icon">🧭</span>
+          <p>探索更多兴趣领域<br><small>按你的收藏推荐新主题蛋（开发中）</small></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 视图 4：课程详情页 ===== -->
+  <section id="view-course" class="view">
+    <header class="topbar">
+      <button class="back-btn" data-back="egg">‹ 返回</button>
+      <span class="topbar-title">课程详情</span>
+      <span class="topbar-spacer"></span>
+    </header>
+    <div class="doc" id="course-doc">
+      <!-- 课程总览（课卡网格）由 JS 渲染 -->
+    </div>
+    <div class="doc-foot">
+      <button class="btn btn-primary btn-block" id="btn-course-done">学完了，+30 金币</button>
+    </div>
+  </section>
+
+  <!-- ===== 视图 4b：单节课详情页 ===== -->
+  <section id="view-lesson" class="view">
+    <header class="topbar">
+      <button class="back-btn" data-back="course">‹ 返回</button>
+      <span class="topbar-title" id="lesson-topbar-title">第 1 课</span>
+      <span class="topbar-spacer"></span>
+    </header>
+    <div class="doc" id="lesson-doc">
+      <!-- 单节课由 JS 渲染 -->
+    </div>
+    <div class="doc-foot doc-foot--split">
+      <button class="btn" id="btn-lesson-prev">‹ 上一节</button>
+      <button class="btn btn-primary" id="btn-lesson-next">下一节 ›</button>
+    </div>
+  </section>
+
+  <!-- ===== 视图 6：金币兑换（弹层） ===== -->
+  <div id="view-exchange" class="view overlay">
+    <div class="exchange-card">
+      <h2 class="exchange-title">金币兑换</h2>
+      <p class="exchange-sub">把学习赚到的金币换成喂养资源</p>
+      <div class="exchange-balance">当前金币 <b id="exchange-coins">0</b></div>
+
+      <div class="exchange-list">
+        <button class="exchange-item" type="button" data-item="apple">
+          <span class="exchange-icon">🍎</span>
+          <span class="exchange-info">
+            <b>苹果</b>
+            <small>喂食 +15 成长值</small>
+          </span>
+          <span class="exchange-price" data-price="apple">10 金币</span>
+        </button>
+        <button class="exchange-item" type="button" data-item="water">
+          <span class="exchange-icon">💧</span>
+          <span class="exchange-info">
+            <b>水滴</b>
+            <small>喂水 +10 成长值</small>
+          </span>
+          <span class="exchange-price" data-price="water">5 金币</span>
+        </button>
+      </div>
+
+      <button class="btn btn-secondary btn-block" id="btn-exchange-close" type="button">关闭</button>
+    </div>
+  </div>
+
+  <!-- ===== 视图 5：复习测验页 ===== -->
+  <section id="view-quiz" class="view">
+    <header class="topbar">
+      <button class="back-btn" data-back="egg">‹ 返回</button>
+      <span class="topbar-title">复习测验</span>
+      <span class="topbar-spacer"></span>
+    </header>
+    <div class="quiz" id="quiz-body">
+      <!-- 题目由 JS 渲染 -->
+    </div>
+  </section>
+
+  <!-- 全局轻提示 -->
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

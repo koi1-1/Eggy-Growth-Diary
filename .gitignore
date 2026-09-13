@@ -1,0 +1,18 @@
+# 依赖
+node_modules/
+
+# 凭证（绝不提交）
+.env
+.env.local
+.env.*.local
+
+# 数据库（Step 5 起）
+*.db
+*.db-journal
+data/
+
+# 系统 / 编辑器
+.DS_Store
+*.log
+.idea/
+.vscode/
