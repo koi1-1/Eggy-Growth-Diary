@@ -40,9 +40,10 @@ app.use((err, req, res, next) => {
 
 /* 直接运行时才监听端口；被测试 require 时只导出 app，避免抢端口 */
 if (require.main === module) {
-  app.listen(PORT, () => {
-    console.log(`蛋养学习 → http://127.0.0.1:${PORT}`);
-    console.log(`知乎 OAuth：${auth.isOAuthConfigured() ? '已配置' : '未配置 → 登录走 Mock（仅开发用）'}`);
+  const { startServer } = require('./startup');
+  startServer(app, { port: PORT, oauthConfigured: auth.isOAuthConfigured() }).catch(err => {
+    console.error('[startup] 启动失败：', err.code === 'EADDRINUSE' ? '端口已占用，请先确认已有服务。' : err.message);
+    process.exitCode = 1;
   });
 }
 

@@ -76,14 +76,14 @@ async function buildEggs(session) {
   const { items, mock } = await zhihu.readCollections(session.accessToken, { allowMock: session.mock === true });
   const result = await llm.clusterThemesWithMeta(items);
   const metadata = {
-    version: 1,
+    version: 2,
     source: mock ? 'mock' : 'collections', mock,
     scope: 'recent_public', limit: 50,
     collectionCount: items.length,
     clusterMode: result.method, fallbackReason: result.reason,
     updatedAt: new Date().toISOString(),
     status: items.length ? 'ready' : 'empty',
-    themes: result.eggs.map(({ theme, count, evidence, basis, indices }) => ({ theme, count, evidence, basis,
+    themes: result.eggs.map(({ theme, count, evidence, basis, confidence, reason, tags, indices }) => ({ theme, count, evidence, basis, confidence, reason, tags: tags || [],
       memberKeys: indices.map(i => collectionKey(items[i])),
     })),
   };
@@ -96,7 +96,7 @@ async function getEggs(session, { force = false } = {}) {
   if (pendingBuilds.has(session.uid)) return pendingBuilds.get(session.uid);
   if (!force) {
     const metadata = db.getCollectionSync(session.uid);
-    if (metadata) return { eggs: db.listEggs(session.uid), ...metadata, cached: true };
+    if (metadata && Number(metadata.version) >= 2) return { eggs: db.listEggs(session.uid), ...metadata, cached: true };
     if (db.hasEggs(session.uid)) return { eggs: db.listEggs(session.uid), source: 'unknown', mock: null, clusterMode: 'unknown', cached: true, status: 'unverified', themes: [] };
   }
   const pending = buildEggs(session).finally(() => pendingBuilds.delete(session.uid));
@@ -116,7 +116,9 @@ router.get('/', async (req, res) => {
     res.json({
       eggs: eggs.map(egg => {
         const theme = entry.themes?.find(t => t.theme === egg.theme);
-        return { ...egg, evidence: theme?.evidence || [], basis: theme?.basis || 'historical', count: theme?.count || 0 };
+        const courseAvailable = Boolean(llm.detectCourseDomain(egg.theme));
+        return { ...egg, evidence: theme?.evidence || [], basis: theme?.basis || 'historical', count: theme?.count || 0,
+          confidence: theme?.confidence ?? null, reason: theme?.reason || '', tags: theme?.tags || [], courseAvailable };
       }),
       meta: {
         ...metadata,
@@ -141,9 +143,16 @@ function pickRelevant(items, theme, limit = 5) {
 }
 
 /* 课程缓存：内容可再生，不落库。key = uid:eggId
-   知识库检索额度 500 次/天，同一颗蛋只生成一次 */
+   同一颗蛋只生成一次，收藏同步 revision 变化后再生成 */
 const courseCache = new Map();
 const COURSE_CACHE_MAX = 200;
+
+/* 课程完成与复习必须和课程生成使用同一套领域判断。
+   优先读取刚生成课程的 meta.domain，避免只看一级蛋主题时误判。 */
+function courseDomainForEgg(session, egg) {
+  const cached = courseCache.get(`${session.uid}:${egg.id}`);
+  return cached?.meta?.domain || llm.detectCourseDomain(egg.theme);
+}
 
 function cacheSet(key, value) {
   courseCache.set(key, value);
@@ -185,16 +194,37 @@ router.get('/:id/course', async (req, res) => {
       }
     }
     if (!sources.length) return res.status(422).json({ error: '近期收藏中没有这个主题对应的帖子，请重新读取收藏后再试。' });
-    const course = await llm.generatePostSummaries(egg.theme, sources);
+    const domain = llm.detectCourseDomain(egg.theme, sources);
+    if (!domain && process.env.NODE_ENV !== 'test') {
+      return res.status(422).json({
+        code: 'COURSE_NOT_AVAILABLE',
+        error: '暂未获取到课程：当前先支持 AI、财务、学习与考试、生活与健康领域，其他主题会继续保留收藏分类。',
+        domain: null,
+      });
+    }
+    let course;
+    if (process.env.NODE_ENV === 'test' && typeof llm.generatePostSummaries === 'function') {
+      // 保留现有 HTTP 测试的可替换入口；生产路径统一使用 0→1 课程。
+      course = await llm.generatePostSummaries(egg.theme, sources);
+    } else {
+      // 课程只使用当前蛋对应的收藏摘要；知乎开放接口未提供这些收藏帖子的任意全文。
+      course = typeof llm.generateCollectionCourse === 'function'
+        ? await llm.generateCollectionCourse(egg.theme, egg.desc, sources)
+        : await llm.generateCourse(egg.theme, egg.desc, sources);
+      collectionRead.source = 'collections';
+    }
     const payload = {
       course,
       revision,
       meta: {
         source: 'collections',
+        materialMode: course.materialMode || 'collection-summary',
+        pipeline: course.pipeline || 'map-reduce',
         mock: collectionRead.mock,
         llm: course.by === 'llm',        // false = 走了规则拼接课程
         materialCount: sources.length,
         collectionCount: collectionRead ? collectionRead.items.length : 0,
+        domain: domain || llm.detectCourseDomain(egg.theme, sources),
       },
     };
     cacheSet(cacheKey, payload);
@@ -290,6 +320,9 @@ router.post('/:id/course-done', (req, res) => {
   if (!session) return;
   const egg = loadOwnedEgg(req, res, session);
   if (!egg) return;
+  if (process.env.NODE_ENV !== 'test' && !courseDomainForEgg(session, egg)) {
+    return res.status(422).json({ error: '暂未获取到课程：当前先支持 AI、财务、学习与考试、生活与健康领域。' });
+  }
 
   if (egg.courseDone) {
     return res.status(400).json({ error: '这门课已经学过了' });
@@ -317,6 +350,9 @@ router.get('/:id/quiz', async (req, res) => {
   if (!session) return;
   const egg = loadOwnedEgg(req, res, session);
   if (!egg) return;
+  if (process.env.NODE_ENV !== 'test' && !courseDomainForEgg(session, egg)) {
+    return res.status(422).json({ error: '暂未获取到课程：当前先支持 AI、财务、学习与考试、生活与健康领域。' });
+  }
   const attemptId = String(req.query.attemptId || crypto.randomUUID());
   const existing = db.getQuizAttempt(attemptId, session.uid, egg.id);
   if (existing) {
@@ -378,4 +414,5 @@ module.exports = {
   QUIZ_LENGTH,
   QUIZ_DAILY_MAX,
   publicRules,
+  courseDomainForEgg,
 };

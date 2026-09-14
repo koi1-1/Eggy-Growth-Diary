@@ -130,6 +130,8 @@ function buildEggState(egg, i = 0) {
     count: Number(egg.count) || 0,
     basis: egg.basis || 'historical',
     evidence: egg.evidence || [],
+    tags: Array.isArray(egg.tags) ? egg.tags : [],
+    courseAvailable: egg.courseAvailable !== false,
   };
 }
 
@@ -163,7 +165,15 @@ async function api(path, { method = "GET", body } = {}) {
 /* 用后端返回的蛋覆盖本地副本 —— 后端是数值权威，前端不自己加减金币 */
 function applyEgg(updated) {
   if (!updated) return null;
-  const merged = buildEggState(updated);
+  // 动作接口（领养/喂养/课程完成）只返回游戏状态，不重复下发分类元信息；
+  // 保留列表接口已经判定好的 courseAvailable，避免领养后误把无课程主题启用。
+  const previous = state.eggs.find((e) => e.id === updated.id);
+  const merged = buildEggState({
+    ...updated,
+    courseAvailable: typeof updated.courseAvailable === 'boolean'
+      ? updated.courseAvailable
+      : previous?.courseAvailable,
+  });
   const i = state.eggs.findIndex((e) => e.id === merged.id);
   if (i >= 0) state.eggs[i] = merged;
   if (state.currentEgg && state.currentEgg.id === merged.id) state.currentEgg = merged;
@@ -291,10 +301,14 @@ function renderBubbleCloud() {
     b.style.setProperty("--offset", BUBBLE_OFFSETS[i % BUBBLE_OFFSETS.length] + "px");
     b.setAttribute("aria-label", `领养 ${egg.theme} 蛋`);
     // 图标是固定字符集、主题名转义后插入，无注入面
+    const tags = Array.isArray(egg.tags) && egg.tags.length
+      ? `<span class="bubble-tags">${egg.tags.map(tag => `#${esc(tag)}`).join(' ')}</span>` : '';
     b.innerHTML = `<span class="bubble-icon" aria-hidden="true">${themeIcon(egg.theme, i)}</span>`
       + `<span class="bubble-text">${esc(egg.theme)}</span>`
+      + tags
       + `<span class="bubble-count">${egg.basis === 'historical' ? '历史保留' : `${egg.count} 条收藏`}</span>`;
     b.title = egg.evidence[0]?.title || egg.theme;
+    if (egg.reason) b.title += `｜${egg.reason}`;
     b.addEventListener("click", () => openAdopt(egg));
     cloud.appendChild(b);
   });
@@ -349,6 +363,8 @@ function renderEggPage() {
   stage.className = "stage-egg egg-tone-" + egg.tone;
   stage.innerHTML = eggSVG(egg.tone, egg.level);
   renderCourseEntryDesc(egg);
+  $("#btn-todo-course").disabled = egg.courseAvailable === false;
+  $("#btn-todo-review").disabled = egg.courseAvailable === false;
   renderEggStats(egg);
 }
 
@@ -460,7 +476,7 @@ function togglePanel(name) {
 }
 
 /* ---------- 视图 4：课程详情 ----------
-   课程内容来自后端（LLM 整理 + 知乎知识库/收藏素材），属于外部文本，
+   课程内容来自后端（LLM Map-Reduce + 当前收藏摘要），属于外部文本，
    渲染一律转义，避免素材里混入标签被当成 HTML 执行。 */
 function esc(s) {
   return String(s == null ? "" : s)
@@ -478,6 +494,10 @@ function safeUrl(u) {
 const courseCache = new Map();
 
 function renderCourseEntryDesc(egg) {
+  if (egg && egg.courseAvailable === false) {
+    $("#course-entry-desc").textContent = '暂未获取到课程';
+    return;
+  }
   const cached = egg && courseCache.get(egg.id);
   const n = cached && cached.course && cached.course.lessons && cached.course.lessons.length;
   // 气泡上的副标题位置窄，文案从简：节数 + 学完能拿多少金币
@@ -531,6 +551,9 @@ function renderCourse(course, meta) {
 
   let html = `<h1>${esc(c.title)}</h1>`;
   if (c.principle) html += `<p class="course-principle">排课原则：${esc(c.principle)}</p>`;
+  if (meta?.materialMode === 'collection-summary') {
+    html += `<p class="course-note">本课程基于当前领域的 ${Number(meta.materialCount) || 0} 条收藏摘要生成；知乎开放接口未提供这些收藏帖子的完整正文。</p>`;
+  }
   if (c.by === "rules") {
     html += `<p class="course-note">这门课由资料自动拼接而成（AI 整理暂不可用），文章均取自下列来源。</p>`;
   }
@@ -641,6 +664,11 @@ async function openCourse(refresh = false) {
   if (!egg) return;
   showView("#view-course");
 
+  if (egg.courseAvailable === false) {
+    renderCourseHint('暂未获取到课程：当前先支持 AI、财务、学习与考试、生活与健康领域，其他主题会继续保留收藏分类。');
+    return;
+  }
+
   const cached = courseCache.get(egg.id);
   if (!refresh && cached) return renderCourse(cached.course, cached.meta);
 
@@ -737,6 +765,11 @@ async function submitQuiz(el) {
 }
 
 function openQuiz() {
+  if (state.currentEgg?.courseAvailable === false) {
+    showView("#view-egg");
+    flash('暂未获取到课程：当前先支持 AI、财务、学习与考试、生活与健康领域');
+    return;
+  }
   quizState.answered = new Set();
   quizState.answers = [];
   quizState.correct = 0;
@@ -826,15 +859,19 @@ function bindEvents() {
 
 /* ---------- 蛋墙数据（Step 3）---------- */
 function setEggs(list) {
-  state.eggs = list.map(buildEggState);
+  // 旧版已领养蛋仍保留在后端以保存成长进度，但不再作为当前收藏气泡展示。
+  // 只有本次同步产生的主题（basis !== historical）进入气泡墙。
+  const current = list.filter(egg => egg && egg.basis !== 'historical');
+  state.eggs = current.map(buildEggState);
   renderBubbleCloud();
   const evidence = $('#wall-evidence');
-  evidence.hidden = !list.length;
+  evidence.hidden = !current.length;
   $('#wall-evidence-list').innerHTML = state.eggs.map(egg => {
     const sample = egg.evidence[0];
     const url = sample && safeUrl(sample.url);
     const source = sample ? (url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(sample.title)}</a>` : esc(sample.title)) : '历史主题，尚无本次收藏依据';
-    return `<li><strong>${esc(egg.theme)}</strong> · ${egg.count} 条${egg.basis === 'title' ? ' · 按标题展示' : ''}<br>${source}</li>`;
+    const tags = egg.tags?.length ? ` · ${egg.tags.map(t => `#${esc(t)}`).join(' ')}` : '';
+    return `<li><strong>${esc(egg.theme)}</strong> · ${egg.count} 条${tags}${egg.basis === 'title' ? ' · 按标题展示' : ''}<br>${source}</li>`;
   }).join('');
 }
 
@@ -849,7 +886,7 @@ function updateWallSub(meta) {
     el.textContent = '旧版缓存，收藏来源尚未核验';
   } else {
     const n = Number.isInteger(meta.collectionCount) ? meta.collectionCount : 0;
-    const mode = meta.clusterMode === 'none' ? '未生成新主题' : meta.clusterMode === 'llm' ? 'AI 聚类' : '标题规则分组';
+    const mode = meta.clusterMode === 'none' ? '未生成新主题' : meta.clusterMode === 'llm' ? 'AI 聚类' : meta.clusterMode === 'domains' ? '一级领域分组' : '标题规则分组';
     const time = meta.updatedAt ? new Date(meta.updatedAt).toLocaleString('zh-CN', { hour12: false }) : '';
     el.textContent = `${meta.mock ? '示例收藏' : '知乎公开范围近期收藏'} ${n} 条 · ${mode} · ${meta.cached ? '上次结果' : '本次更新'} ${time}`
       + (meta.mock ? '' : '。最多读取 50 条，不包含完整收藏历史。')

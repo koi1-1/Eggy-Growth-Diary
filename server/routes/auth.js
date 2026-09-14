@@ -30,7 +30,9 @@ router.get('/callback', async (req, res) => {
   const state = req.query.state;
 
   if (!auth.consumeState(state, req.sid)) {
-    return res.status(400).send('登录校验失败：state 缺失、不匹配或已过期，请返回重新登录。');
+    return res.status(400).send(`<!doctype html><meta charset="utf-8"><title>登录校验失败</title>
+      <p>登录校验失败：state 缺失、不匹配或已过期。</p>
+      <p><a href="/api/auth/login">点击这里重新登录知乎</a></p>`);
   }
   if (!code) {
     return res.status(400).send('登录失败：未收到授权码。');
@@ -44,7 +46,8 @@ router.get('/callback', async (req, res) => {
   } catch (err) {
     // 只回传安全信息；绝不包含 code / app_key / access_token
     console.error('[auth] 登录失败：', err.message);
-    res.status(502).send('登录失败，请稍后重试。');
+    const detail = process.env.NODE_ENV === 'development' ? `（${String(err.message || '').slice(0, 120)}）` : '';
+    res.status(502).send(`登录失败，请稍后重试。${detail}`);
   }
 });
 

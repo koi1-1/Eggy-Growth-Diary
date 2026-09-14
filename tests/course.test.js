@@ -275,6 +275,30 @@ test('generateCourse：LLM 返回 5xx 时降级到规则课程', async () => {
   assert.equal(c.by, 'rules');
 });
 
+test('generateCollectionCourse：先逐篇 Map，再 Reduce 为收藏专属课程', async () => {
+  const calls = [];
+  deepseek = () => {
+    calls.push(true);
+    if (calls.length === 1) return reply({ posts: [
+      { sourceId: 1, points: ['变量是数据的名字'], keyTerms: ['变量'], takeaway: '先理解变量再写程序' },
+      { sourceId: 2, points: ['循环可以重复执行'], keyTerms: ['循环'], takeaway: '用循环处理重复任务' },
+    ] })();
+    return reply({ title: 'Python 收藏 0→1 学习计划', principle: '先理解，再动手', lessons: [
+      { name: '认知建立', goal: '理解基础', reason: '先打底', articles: [{ title: '伪标题', url: 'https://www.zhihu.com/p/1', why: '基础' }], actions: [] },
+    ], refs: [{ title: '伪标题', url: 'https://www.zhihu.com/p/2' }] })();
+  };
+  const c = await llm.generateCollectionCourse('Python 编程', '从入门开始', [
+    { title: '变量入门', url: 'https://www.zhihu.com/p/1', text: '变量、数据。' },
+    { title: '循环入门', url: 'https://www.zhihu.com/p/2', text: '循环、重复。' },
+  ]);
+  assert.equal(c.pipeline, 'map-reduce');
+  assert.equal(c.materialMode, 'collection-summary');
+  assert.equal(c.by, 'llm');
+  assert.equal(c.lessons[0].articles[0].url, 'https://www.zhihu.com/p/1');
+  assert.equal(c.refs[0].url, 'https://www.zhihu.com/p/2');
+  assert.equal(calls.length, 2);
+});
+
 /* ---------- 2.5 参考来源只收「长期有效」的链接 ----------
    知识库的 PDF/EPUB 来源给的是带签名的下载直链，几分钟后就失效，
    当参考来源展示给用户等于给死链。这类链接可以当素材，但不能当引用。 */

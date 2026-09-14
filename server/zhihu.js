@@ -9,7 +9,7 @@
 const BASE = 'https://developer.zhihu.com';
 const ACCESS_SECRET = process.env.ZHIHU_ACCESS_SECRET || '';
 
-/* 收藏只有标题 + 摘要，没有正文——课程正文走知识库检索（Step 4） */
+/* 收藏接口只有标题 + 摘要，没有任意收藏帖全文；课程只使用这些字段。 */
 function isUserApiConfigured() {
   return Boolean(ACCESS_SECRET);
 }

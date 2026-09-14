@@ -37,6 +37,17 @@ test('specific subjects win over generic learning and career keywords', () => {
   assert.ok(eggs.every(e => e.count === 1));
 });
 
+test('course domain supports AI, finance, learning and health', () => {
+  assert.equal(llm.detectCourseDomain('人工智能'), 'ai');
+  assert.equal(llm.detectCourseDomain('AI 与技术'), 'ai');
+  assert.equal(llm.detectCourseDomain('财务金融'), 'finance');
+  assert.equal(llm.detectCourseDomain('财务与投资'), 'finance');
+  assert.equal(llm.detectCourseDomain('保研升学'), 'learning');
+  assert.equal(llm.detectCourseDomain('学习与考试'), 'learning');
+  assert.equal(llm.detectCourseDomain('生活与健康'), 'health');
+  assert.equal(llm.detectCourseDomain('运动健身'), 'health');
+});
+
 test('empty collections generate no recommended eggs', async () => {
   assert.deepEqual(await llm.clusterThemesWithMeta([]), { eggs: [], method: 'none', reason: 'empty' });
 });
