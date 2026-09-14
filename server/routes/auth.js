@@ -13,7 +13,7 @@ router.get('/login', (req, res) => {
       return res.status(503).json({ error: '未配置知乎 OAuth 凭证，且当前环境不允许 Mock 登录' });
     }
     const sid = auth.ensureSid(req, res);
-    auth.upgradeSession(sid, auth.MOCK_USER, { accessToken: null, expiresIn: 0 });
+    auth.upgradeSession(sid, auth.MOCK_USER, { accessToken: null, expiresIn: 0, mock: true });
     console.warn('[auth] 未配置 OAuth 凭证，已使用 Mock 登录（仅开发用，勿用于线上）');
     return res.redirect('/');
   }

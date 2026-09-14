@@ -40,6 +40,23 @@ CREATE TABLE IF NOT EXISTS eggs (
   updated_at    TEXT    NOT NULL DEFAULT (datetime('now')),
   UNIQUE(user_id, theme)
 );
+
+CREATE TABLE IF NOT EXISTS quiz_attempts (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  egg_id INTEGER NOT NULL,
+  questions TEXT NOT NULL,
+  answers TEXT,
+  correct INTEGER,
+  gained INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  settled_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_quiz_user_egg ON quiz_attempts(user_id, egg_id, created_at);
+CREATE TABLE IF NOT EXISTS collection_syncs (
+  user_id TEXT PRIMARY KEY,
+  metadata TEXT NOT NULL
+);
 `;
 
 /* DB 行 → 前端可见的蛋对象。keywords 等中间产物不外露。 */
@@ -51,6 +68,8 @@ function toPublicEgg(row) {
     desc: row.desc,
     size: row.size,
     tone: Number(row.tone),
+    count: Number(row.count),
+    source: row.source,
     adopted: row.adopted === 1,
     coins: Number(row.coins),
     apples: Number(row.apples),
@@ -76,6 +95,8 @@ function createStore(dbPath) {
     listByUser: db.prepare('SELECT * FROM eggs WHERE user_id = ? ORDER BY id'),
     getById: db.prepare('SELECT * FROM eggs WHERE id = ?'),
     getByTheme: db.prepare('SELECT * FROM eggs WHERE user_id = ? AND theme = ?'),
+    getSync: db.prepare('SELECT metadata FROM collection_syncs WHERE user_id = ?'),
+    saveSync: db.prepare('INSERT INTO collection_syncs (user_id, metadata) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET metadata=excluded.metadata'),
     insertOne: db.prepare(
       `INSERT INTO eggs (user_id, theme, desc, size, tone, count, source)
        VALUES (?, ?, ?, ?, ?, ?, ?)`
@@ -99,10 +120,16 @@ function createStore(dbPath) {
                        updated_at = datetime('now')
        WHERE id = ?`
     ),
+    getAttempt: db.prepare('SELECT * FROM quiz_attempts WHERE id = ? AND user_id = ? AND egg_id = ?'),
+    insertAttempt: db.prepare('INSERT INTO quiz_attempts (id,user_id,egg_id,questions,created_at) VALUES (?,?,?,?,datetime(\'now\'))'),
+    settleAttempt: db.prepare('UPDATE quiz_attempts SET answers=?, correct=?, gained=?, settled_at=datetime(\'now\') WHERE id=? AND user_id=? AND egg_id=?'),
+    dailyBest: db.prepare("SELECT COALESCE(MAX(correct), 0) AS best FROM quiz_attempts WHERE user_id=? AND egg_id=? AND settled_at IS NOT NULL AND date(created_at, '+8 hours') = date('now','+8 hours')"),
   };
 
   /* 聚类结果落库；返回该用户当前的**全部**蛋（含此前已领养、本次未再聚出的） */
-  function saveEggs(userId, eggs, source) {
+  function saveEggs(userId, eggs, source, metadata = null) {
+    db.exec('BEGIN IMMEDIATE');
+    try {
     const keptIds = [];
     for (const e of eggs) {
       stmt.upsertMeta.run(
@@ -121,7 +148,14 @@ function createStore(dbPath) {
       }
     }
 
-    return stmt.listByUser.all(userId).map(toPublicEgg);
+    if (metadata) stmt.saveSync.run(userId, JSON.stringify(metadata));
+    const saved = stmt.listByUser.all(userId).map(toPublicEgg);
+    db.exec('COMMIT');
+    return saved;
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
   }
 
   return {
@@ -132,6 +166,10 @@ function createStore(dbPath) {
     getEggRow: (id) => stmt.getById.get(Number(id)) || null,
     hasEggs: (userId) => stmt.listByUser.all(userId).length > 0,
     saveEggs,
+    getCollectionSync: userId => {
+      const row = stmt.getSync.get(userId);
+      return row ? JSON.parse(row.metadata) : null;
+    },
     /* 原子写回一颗蛋的游戏状态（读-改-写在 routes 里完成） */
     saveState: (egg) => {
       stmt.updateState.run(
@@ -141,6 +179,10 @@ function createStore(dbPath) {
       );
       return toPublicEgg(stmt.getById.get(egg.id));
     },
+    getQuizAttempt: (id, userId, eggId) => stmt.getAttempt.get(String(id), userId, Number(eggId)) || null,
+    createQuizAttempt: (id, userId, eggId, questions) => { stmt.insertAttempt.run(String(id), userId, Number(eggId), JSON.stringify(questions)); return stmt.getAttempt.get(String(id), userId, Number(eggId)); },
+    settleQuizAttempt: (id, userId, eggId, answers, correct, gained) => { stmt.settleAttempt.run(JSON.stringify(answers), Number(correct), Number(gained), String(id), userId, Number(eggId)); return stmt.getAttempt.get(String(id), userId, Number(eggId)); },
+    dailyQuizBest: (userId, eggId) => Number(stmt.dailyBest.get(userId, Number(eggId)).best || 0),
     close: () => db.close(),
   };
 }
@@ -172,5 +214,10 @@ module.exports = {
   getEggRow: (...a) => getStore().getEggRow(...a),
   hasEggs: (...a) => getStore().hasEggs(...a),
   saveEggs: (...a) => getStore().saveEggs(...a),
+  getCollectionSync: (...a) => getStore().getCollectionSync(...a),
   saveState: (...a) => getStore().saveState(...a),
+  getQuizAttempt: (...a) => getStore().getQuizAttempt(...a),
+  createQuizAttempt: (...a) => getStore().createQuizAttempt(...a),
+  settleQuizAttempt: (...a) => getStore().settleQuizAttempt(...a),
+  dailyQuizBest: (...a) => getStore().dailyQuizBest(...a),
 };

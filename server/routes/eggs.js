@@ -7,11 +7,13 @@
         不接受前端传入的金币数或成长值；每个 :id 先校验归属，不匹配一律 404。 */
 
 const express = require('express');
+const crypto = require('crypto');
 const zhihu = require('../zhihu');
 const llm = require('../llm');
 const db = require('../db');
 
 const router = express.Router();
+const collectionKey = item => crypto.createHash('sha256').update(item.url || item.title).digest('hex');
 
 /* ---------- 数值规则（唯一权威，改数值只改这里）---------- */
 const COIN_PER_COURSE = 30;   // 学完一门系统课程
@@ -21,6 +23,7 @@ const GROWTH_PER = { apple: 15, water: 10 }; // 喂养获得的成长值
 const NEW_EGG = { coins: 50, apples: 1, water: 1 }; // 领养新手礼包
 const MAX_GROWTH = 100;       // 成长值满则升级并归零
 const QUIZ_LENGTH = 3;        // 复习题数上限，用于夹住客户端上报的答对数
+const QUIZ_DAILY_MAX = QUIZ_LENGTH * COIN_PER_CORRECT;
 
 const ITEM_NAME = { apple: '苹果', water: '水滴' };
 /* 道具名 → 数据库列名。注意苹果的列是复数 apples，不能直接用 egg[type] */
@@ -67,19 +70,38 @@ function loadOwnedEgg(req, res, session) {
 
 /* ---------- 聚类（仅在 DB 里还没有这个用户的蛋、或显式 refresh 时执行）---------- */
 async function buildEggs(session) {
-  const { items, mock } = await zhihu.readCollections(session.accessToken);
-  const eggs = await llm.clusterThemes(items);
-  const source = items.length ? 'collections' : 'recommended';
-  // 落库后返回 DB 里的蛋（含此前已领养、本次未再聚出的那些）
-  const saved = db.saveEggs(session.uid, eggs, source);
-  return { eggs: saved, source, mock };
+  if (session.tokenExpiresAt && session.tokenExpiresAt <= Date.now()) {
+    throw new Error('读取收藏失败：知乎授权已过期，请重新连接知乎');
+  }
+  const { items, mock } = await zhihu.readCollections(session.accessToken, { allowMock: session.mock === true });
+  const result = await llm.clusterThemesWithMeta(items);
+  const metadata = {
+    version: 1,
+    source: mock ? 'mock' : 'collections', mock,
+    scope: 'recent_public', limit: 50,
+    collectionCount: items.length,
+    clusterMode: result.method, fallbackReason: result.reason,
+    updatedAt: new Date().toISOString(),
+    status: items.length ? 'ready' : 'empty',
+    themes: result.eggs.map(({ theme, count, evidence, basis, indices }) => ({ theme, count, evidence, basis,
+      memberKeys: indices.map(i => collectionKey(items[i])),
+    })),
+  };
+  const saved = db.saveEggs(session.uid, result.eggs, metadata.source, metadata);
+  return { eggs: saved, ...metadata, cached: false };
 }
 
+const pendingBuilds = new Map();
 async function getEggs(session, { force = false } = {}) {
-  if (!force && db.hasEggs(session.uid)) {
-    return { eggs: db.listEggs(session.uid), source: 'stored', mock: !zhihu.isUserApiConfigured() };
+  if (pendingBuilds.has(session.uid)) return pendingBuilds.get(session.uid);
+  if (!force) {
+    const metadata = db.getCollectionSync(session.uid);
+    if (metadata) return { eggs: db.listEggs(session.uid), ...metadata, cached: true };
+    if (db.hasEggs(session.uid)) return { eggs: db.listEggs(session.uid), source: 'unknown', mock: null, clusterMode: 'unknown', cached: true, status: 'unverified', themes: [] };
   }
-  return buildEggs(session);
+  const pending = buildEggs(session).finally(() => pendingBuilds.delete(session.uid));
+  pendingBuilds.set(session.uid, pending);
+  return pending;
 }
 
 /* ---------- GET /api/eggs —— 我的蛋列表（含游戏状态）---------- */
@@ -89,39 +111,32 @@ router.get('/', async (req, res) => {
 
   try {
     const entry = await getEggs(session, { force: req.query.refresh === '1' });
+    const { eggs, ...metadata } = entry;
+    res.set('Cache-Control', 'no-store');
     res.json({
-      eggs: entry.eggs,
+      eggs: eggs.map(egg => {
+        const theme = entry.themes?.find(t => t.theme === egg.theme);
+        return { ...egg, evidence: theme?.evidence || [], basis: theme?.basis || 'historical', count: theme?.count || 0 };
+      }),
       meta: {
-        source: entry.source,          // collections | recommended | stored
-        mock: entry.mock,              // true = 用了假收藏（未配置凭证）
-        llm: llm.isLLMConfigured(),    // false = 走了规则聚类
+        ...metadata,
+        themes: undefined,
+        llm: entry.clusterMode === 'llm',
         rules: publicRules(),          // 前端展示用；数值权威仍在本文件常量
       },
     });
   } catch (err) {
-    console.error('[eggs] 生成蛋失败：', err.message);
-    res.status(502).json({ error: '暂时无法生成你的蛋，请稍后重试' });
+    const message = err.message.startsWith('读取收藏失败：') ? err.message : '暂时无法生成你的蛋，请稍后重试';
+    res.status(502).json({ error: message });
   }
 });
 
 /* ---------- 课程素材 ---------- */
 
-/* 从收藏里挑与主题相关的素材。收藏没有正文，title/summary 直接当素材正文用。
-   先按主题命中排序；一条都命中不到时退回前几条（宁可素材泛一点，也不给空课程）。 */
+/* 旧数据只复用主题分组，不用无关收藏补齐素材。 */
 function pickRelevant(items, theme, limit = 5) {
-  const key = String(theme || '').toLowerCase();
-  const grams = [];
-  for (let i = 0; i < key.length - 1; i++) grams.push(key.slice(i, i + 2));
-
-  const scored = items.map(it => {
-    const text = `${it.title} ${it.summary}`.toLowerCase();
-    let score = key && text.includes(key) ? 2 : 0;
-    score += grams.filter(g => text.includes(g)).length;
-    return { it, score };
-  });
-
-  const hit = scored.filter(s => s.score > 0).sort((a, b) => b.score - a.score);
-  const picked = (hit.length ? hit : scored).slice(0, limit).map(s => s.it);
+  const group = llm.clusterByRules(items).find(g => g.theme === theme);
+  const picked = (group?.indices || []).slice(0, limit).map(i => items[i]);
   return picked.map(it => ({ title: it.title, url: it.url, text: it.summary }));
 }
 
@@ -146,42 +161,40 @@ router.get('/:id/course', async (req, res) => {
   if (!egg) return;
 
   const cacheKey = `${session.uid}:${egg.id}`;
+  const sync = db.getCollectionSync(session.uid);
+  const revision = sync?.updatedAt || 'legacy';
   if (req.query.refresh !== '1') {
     const cached = courseCache.get(cacheKey);
-    if (cached) return res.json({ ...cached, cached: true });
+    if (cached?.revision === revision) return res.json({ ...cached, cached: true });
   }
 
   try {
-    // 素材优先级：知识库检索（有正文片段）> 用户自己的收藏（只有标题 + 摘要）
-    let sources = [];
-    let source = 'collections';
-    let mock = false;
-
-    let hits = null;
-    try {
-      hits = await zhihu.searchKnowledge(egg.theme);
-    } catch (err) {
-      // 检索失败不该让整门课挂掉，降级用收藏继续
-      console.warn('[eggs] 知识库检索失败，降级用收藏做素材：', err.message);
-    }
-
-    if (hits && hits.length) {
-      sources = hits;
-      source = 'knowledge';
+    const collectionRead = await zhihu.readCollections(session.accessToken, { allowMock: session.mock === true });
+    const group = sync?.themes?.find(t => t.theme === egg.theme);
+    let sources;
+    if (Array.isArray(group?.memberKeys)) {
+      const keys = new Set(group.memberKeys);
+      sources = collectionRead.items.filter(it => keys.has(collectionKey(it)))
+        .map(it => ({ title: it.title, url: it.url, text: it.summary }));
     } else {
-      const read = await zhihu.readCollections(session.accessToken);
-      mock = read.mock;
-      sources = pickRelevant(read.items, egg.theme);
+      sources = pickRelevant(collectionRead.items, egg.theme, 50);
+      if (!sources.length && group?.evidence?.length) {
+        const urls = new Set(group.evidence.map(e => e.url).filter(Boolean));
+        sources = collectionRead.items.filter(it => urls.has(it.url))
+          .map(it => ({ title: it.title, url: it.url, text: it.summary }));
+      }
     }
-
-    const course = await llm.generateCourse(egg.theme, egg.desc, sources);
+    if (!sources.length) return res.status(422).json({ error: '近期收藏中没有这个主题对应的帖子，请重新读取收藏后再试。' });
+    const course = await llm.generatePostSummaries(egg.theme, sources);
     const payload = {
       course,
+      revision,
       meta: {
-        source,                          // knowledge | collections
-        mock,                            // true = 素材来自假收藏（未配置凭证）
+        source: 'collections',
+        mock: collectionRead.mock,
         llm: course.by === 'llm',        // false = 走了规则拼接课程
         materialCount: sources.length,
+        collectionCount: collectionRead ? collectionRead.items.length : 0,
       },
     };
     cacheSet(cacheKey, payload);
@@ -286,21 +299,70 @@ router.post('/:id/course-done', (req, res) => {
   res.json({ egg: db.saveState(egg), gained: COIN_PER_COURSE });
 });
 
-/* ---------- POST /api/eggs/:id/quiz —— 提交复习成绩 {correct} ---------- */
+/* 规则题是无 LLM 时的可靠兜底；题目内容仍来自当前课程的主题与目标。 */
+function buildQuizQuestions(egg, course) {
+  const lessons = Array.isArray(course && course.lessons) ? course.lessons : [];
+  const goals = lessons.map(x => String(x.goal || '').trim()).filter(Boolean);
+  const theme = egg.theme;
+  return [
+    { q: `学习「${theme}」时，第一步更适合做什么？`, options: ['先建立整体认知', '直接挑战最难案例', '只背结论不实践', '跳过基础'], answer: 0 },
+    { q: `下面哪项最能检验自己真的学会了「${theme}」？`, options: ['只收藏文章', '完成一个小行动', '只看标题', '把计划放着不动'], answer: 1 },
+    { q: `这门学习计划的节奏是怎样的？`, options: ['从易到难逐步实践', '所有内容同时开始', '只做最后一节', '只看不做'], answer: 0 },
+  ].map((x, i) => ({ ...x, hint: goals[i] || goals[0] || `围绕${theme}完成一个可执行的小目标` }));
+}
+
+/* ---------- GET /api/eggs/:id/quiz —— 下发不含答案的试卷 ---------- */
+router.get('/:id/quiz', async (req, res) => {
+  const session = requireSession(req, res);
+  if (!session) return;
+  const egg = loadOwnedEgg(req, res, session);
+  if (!egg) return;
+  const attemptId = String(req.query.attemptId || crypto.randomUUID());
+  const existing = db.getQuizAttempt(attemptId, session.uid, egg.id);
+  if (existing) {
+    const questions = JSON.parse(existing.questions);
+    return res.json({ attemptId, questions: questions.map(({ answer, ...q }) => q), settled: existing.settled_at ? { correct: existing.correct, gained: existing.gained } : null });
+  }
+  // 课程缓存不存在时仍能立刻出题；题目只使用蛋主题，不伪造知乎文章。
+  const course = courseCache.get(`${session.uid}:${egg.id}`)?.course || null;
+  const questions = buildQuizQuestions(egg, course);
+  db.createQuizAttempt(attemptId, session.uid, egg.id, questions);
+  res.json({ attemptId, questions: questions.map(({ answer, ...q }) => q), settled: null, source: 'rules' });
+});
+
+/* ---------- POST /api/eggs/:id/quiz —— 提交复习选项 {attemptId, answers} ---------- */
 router.post('/:id/quiz', (req, res) => {
   const session = requireSession(req, res);
   if (!session) return;
   const egg = loadOwnedEgg(req, res, session);
   if (!egg) return;
 
-  // 夹住客户端上报值，防止虚报答对数换金币
-  const raw = Number(req.body && req.body.correct);
-  const correct = Number.isFinite(raw) ? Math.min(Math.max(Math.trunc(raw), 0), QUIZ_LENGTH) : 0;
-
-  const gained = correct * COIN_PER_CORRECT;
+  const attemptId = String(req.body && req.body.attemptId || '');
+  const answers = Array.isArray(req.body && req.body.answers) ? req.body.answers : [];
+  let attempt = db.getQuizAttempt(attemptId, session.uid, egg.id);
+  // 兼容旧版客户端：仅提交 correct 时按一次旧式结算，后续客户端必须提交选项。
+  const legacyMode = !attempt && !attemptId && Number.isFinite(Number(req.body && req.body.correct));
+  if (legacyMode) {
+    const legacyId = crypto.randomUUID();
+    const questions = buildQuizQuestions(egg, null);
+    attempt = db.createQuizAttempt(legacyId, session.uid, egg.id, questions);
+    const wanted = Math.min(Math.max(Math.trunc(Number(req.body.correct)), 0), QUIZ_LENGTH);
+    answers.push(...questions.map((q, i) => i < wanted ? q.answer : (q.answer === 0 ? 1 : 0)));
+  }
+  if (!attempt) return res.status(400).json({ error: '试卷不存在或已过期，请重新开始复习' });
+  if (attempt.settled_at) return res.json({ egg, attemptId, correct: attempt.correct, gained: attempt.gained, replay: true });
+  let questions;
+  try { questions = JSON.parse(attempt.questions); } catch { return res.status(400).json({ error: '试卷数据异常，请重新开始复习' }); }
+  const normalized = questions.map((q, i) => Number.isInteger(Number(answers[i])) ? Number(answers[i]) : -1);
+  const correct = normalized.reduce((n, a, i) => n + (a === questions[i].answer ? 1 : 0), 0);
+  const previousBest = db.dailyQuizBest(session.uid, egg.id);
+  const newlyRewarded = legacyMode ? correct : Math.max(0, correct - previousBest);
+  const gained = newlyRewarded * COIN_PER_CORRECT;
   egg.coins += gained;
-  egg.quizCorrect = Math.max(egg.quizCorrect, correct); // 记最好成绩，不因重考退步
-  res.json({ egg: db.saveState(egg), correct, gained });
+  egg.quizCorrect = Math.max(egg.quizCorrect, correct);
+  const saved = db.saveState(egg);
+  db.settleQuizAttempt(attemptId, session.uid, egg.id, normalized, correct, gained);
+  res.json({ egg: saved, attemptId, correct, gained, newlyRewarded, dailyCap: QUIZ_DAILY_MAX });
 });
 
 module.exports = {
@@ -314,5 +376,6 @@ module.exports = {
   NEW_EGG,
   MAX_GROWTH,
   QUIZ_LENGTH,
+  QUIZ_DAILY_MAX,
   publicRules,
 };

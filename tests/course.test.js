@@ -357,9 +357,9 @@ test('pickRelevant：挑出与主题相关的收藏，并带上标题/链接/摘
   assert.ok(picked.some(p => p.title.includes('Python')), 'Python 主题应命中 Python 收藏');
 });
 
-test('pickRelevant：一条都命中不到时退回前几条，不给空素材', () => {
+test('pickRelevant：无匹配时返回空，不混入别的主题', () => {
   const picked = pickRelevant(zhihu.MOCK_COLLECTIONS, '量子力学与拓扑绝缘体');
-  assert.equal(picked.length, 5);
+  assert.equal(picked.length, 0);
 });
 
 /* ---------- 4. HTTP 端点 ---------- */
@@ -413,28 +413,14 @@ test('登录后可取到某个蛋的课程', async () => {
   assert.ok(list.data.eggs.length > 0);
   eggId = list.data.eggs[0].id;
 
-  deepseek = reply(validPlan({
-    title: '定制课程',
-    lessons: [
-      {
-        name: '认知建立', goal: '先搞懂是什么', reason: '零基础先建立认知', actions: ['读一遍材料'],
-        // 一条编造的 + 一条真素材（真素材走白名单会被保留并还原原始 title/url）
-        articles: [
-          { title: '编造的文章', url: 'https://evil.example.com/made-up', why: '编的' },
-          { title: '随便写的标题', url: 'https://www.zhihu.com/p/1', why: '真的' },
-        ],
-      },
-    ],
-    refs: [{ title: '编造来源', url: 'https://evil.example.com/made-up' }],
-  }));
+  deepseek = reply({ posts: [{ sourceId: 1, paragraphs: ['第一篇的内容总结'], url: 'https://evil.example.com/made-up' }] });
   const r = await req('GET', `/api/eggs/${eggId}/course`);
 
   assert.equal(r.status, 200);
-  assert.equal(r.data.course.title, '定制课程');
-  assert.equal(r.data.course.principle, '先跑起来，再深入原理');
-  assert.equal(r.data.course.lessons.length, 1);
-  assert.equal(r.data.course.lessons[0].name, '认知建立');
-  assert.deepEqual(r.data.course.lessons[0].actions, ['读一遍材料']);
+  assert.equal(r.data.course.format, 'post-summaries');
+  assert.equal(r.data.course.lessons.length, r.data.meta.materialCount);
+  assert.deepEqual(r.data.course.lessons[0].paragraphs, ['第一篇的内容总结']);
+  assert.ok(r.data.course.lessons.slice(1).every(p => p.summaryMode === 'provided'));
   assert.equal(r.data.meta.llm, true);
   assert.equal(r.data.meta.source, 'collections', '无 Access Secret → 素材降级到收藏');
   assert.equal(r.data.meta.mock, true);
@@ -449,7 +435,7 @@ test('同一颗蛋第二次请求走缓存，不再调 LLM', async () => {
   const r = await req('GET', `/api/eggs/${eggId}/course`);
   assert.equal(r.status, 200);
   assert.equal(r.data.cached, true);
-  assert.equal(r.data.course.title, '定制课程');
+  assert.equal(r.data.course.format, 'post-summaries');
 });
 
 test('?refresh=1 绕过缓存重新生成；LLM 挂了则降级为规则课程', async () => {
@@ -459,8 +445,8 @@ test('?refresh=1 绕过缓存重新生成；LLM 挂了则降级为规则课程',
   assert.equal(r.status, 200);
   assert.equal(r.data.course.by, 'rules');
   assert.equal(r.data.meta.llm, false);
-  assert.equal(r.data.course.lessons.length, 6, '降级后仍是 6 节课');
-  assert.ok(r.data.course.lessons[0].articles.length > 0, '降级课程的文章来自真实素材');
+  assert.equal(r.data.course.lessons.length, r.data.meta.materialCount);
+  assert.ok(r.data.course.lessons.every(l => l.summaryMode === 'provided' && l.paragraphs.length));
 });
 
 test('别人的蛋 / 不存在的蛋返回 404', async () => {

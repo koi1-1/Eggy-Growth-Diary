@@ -16,9 +16,9 @@ function isUserApiConfigured() {
 
 /* 把接口返回的条目归一化成内部结构 */
 function normalizeItem(it) {
-  if (!it || !it.Title) return null;
+  if (!it || typeof it.Title !== 'string' || !it.Title.trim()) return null;
   return {
-    title: String(it.Title),
+    title: it.Title.trim(),
     summary: String(it.Summary || ''),
     url: String(it.Url || ''),
     type: String(it.ContentType || ''),
@@ -39,6 +39,7 @@ async function fetchRecentCollections(oauthToken, limit = 50) {
         'X-Request-Timestamp': String(Math.floor(Date.now() / 1000)),
         'Content-Type': 'application/json',
       },
+      signal: AbortSignal.timeout(15000),
     });
   } catch {
     throw new Error('读取收藏失败：无法连接知乎开放平台');
@@ -52,8 +53,16 @@ async function fetchRecentCollections(oauthToken, limit = 50) {
   // 业务码：0 成功；20001 鉴权失败；30001/30002 频率或配额限制
   if (data.Code !== 0) throw new Error(`读取收藏失败：业务码 ${data.Code}`);
 
-  const items = (data.Data && data.Data.Items) || [];
-  return items.map(normalizeItem).filter(Boolean);
+  if (!Array.isArray(data.Data?.Items)) throw new Error('读取收藏失败：响应缺少收藏列表');
+  const items = data.Data.Items.map(normalizeItem);
+  if (items.some(it => !it)) throw new Error('读取收藏失败：条目缺少有效标题');
+  const seen = new Set();
+  return items.filter(it => {
+    const key = it.url || it.title;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /* ---------- 知识库 RAG 检索（课程素材主来源）----------
@@ -152,10 +161,12 @@ const MOCK_COLLECTIONS = [
 
 /* 未配置凭证、或当前会话没有 OAuth Token（如 Mock 登录）时返回假收藏，
    让前端与聚类逻辑可以先行开发验证 */
-function readCollections(oauthToken) {
-  if (!isUserApiConfigured() || !oauthToken) {
+function readCollections(oauthToken, { allowMock = false } = {}) {
+  if (allowMock && process.env.NODE_ENV !== 'production') {
     return Promise.resolve({ items: MOCK_COLLECTIONS, mock: true });
   }
+  if (!isUserApiConfigured()) throw new Error('读取收藏失败：服务端未配置收藏接口凭证');
+  if (!oauthToken) throw new Error('读取收藏失败：当前会话缺少知乎授权，请重新连接知乎');
   return fetchRecentCollections(oauthToken).then(items => ({ items, mock: false }));
 }
 

@@ -127,12 +127,15 @@ function buildEggState(egg, i = 0) {
     water: Number.isFinite(egg.water) ? egg.water : 1,
     courseDone: Boolean(egg.courseDone),
     quizCorrect: Number(egg.quizCorrect) || 0,
+    count: Number(egg.count) || 0,
+    basis: egg.basis || 'historical',
+    evidence: egg.evidence || [],
   };
 }
 
 const state = {
   currentEgg: null,
-  eggs: MOCK_EGGS.map(buildEggState),
+  eggs: [],
 };
 
 /* ---------- 工具 ---------- */
@@ -196,7 +199,7 @@ let eggSeq = 0;
 /* 像素蛋：平涂主色 + 贴着右下轮廓的暗部 + 左上高光 + 深蓝描边。
    只有这四层，不再加斑点／纹理——16×18 的格子里多画一笔就糊成一个球。
    所有层都套 clipPath，超出的部分自动被蛋形裁掉，所以矩形可以放心画大。 */
-function eggSVG(tone) {
+function eggSVG(tone, level = 1) {
   const id = "dy-egg-clip-" + (++eggSeq);
   const fill = "var(--egg-fill, #6FB2FF)";
   const shade = "var(--egg-shade, #3D82D8)";
@@ -212,6 +215,9 @@ function eggSVG(tone) {
     + `<rect x="5" y="3" width="3" height="2" fill="#FFFFFF" opacity=".9"/>`
     + `<rect x="3" y="5" width="3" height="4" fill="#FFFFFF" opacity=".9"/>`
     + `</g>`
+    + (level >= 2 ? `<rect x="7" y="10" width="2" height="2" fill="${ink}" opacity=".8"/>` : '')
+    + (level >= 3 ? `<rect x="4" y="12" width="2" height="2" fill="${ink}" opacity=".65"/><rect x="10" y="7" width="2" height="2" fill="${ink}" opacity=".65"/>` : '')
+    + (level >= 4 ? `<path d="M5 1H11V2H5Z" fill="#FFD45C" stroke="${ink}" stroke-width=".5"/>` : '')
     + `<path d="${EGG_PATH}" fill="none" stroke="${ink}" stroke-width="1.6"/>`
     + `</svg>`;
 }
@@ -281,12 +287,14 @@ function renderBubbleCloud() {
     const b = document.createElement("button");
     b.type = "button";
     // egg-tone-N 提供 --egg-fill / --egg-shade，气泡与蛋共用同一套配色
-    b.className = `bubble bubble--${egg.size} egg-tone-${egg.tone}`;
+    b.className = `bubble bubble--${egg.basis === 'title' ? 'lg' : egg.size} egg-tone-${egg.tone}`;
     b.style.setProperty("--offset", BUBBLE_OFFSETS[i % BUBBLE_OFFSETS.length] + "px");
     b.setAttribute("aria-label", `领养 ${egg.theme} 蛋`);
     // 图标是固定字符集、主题名转义后插入，无注入面
     b.innerHTML = `<span class="bubble-icon" aria-hidden="true">${themeIcon(egg.theme, i)}</span>`
-      + `<span class="bubble-text">${esc(egg.theme)}</span>`;
+      + `<span class="bubble-text">${esc(egg.theme)}</span>`
+      + `<span class="bubble-count">${egg.basis === 'historical' ? '历史保留' : `${egg.count} 条收藏`}</span>`;
+    b.title = egg.evidence[0]?.title || egg.theme;
     b.addEventListener("click", () => openAdopt(egg));
     cloud.appendChild(b);
   });
@@ -299,7 +307,7 @@ function openAdopt(egg) {
 
   const el = $("#adopt-egg");
   el.className = "adopt-egg egg-tone-" + egg.tone;
-  el.innerHTML = eggSVG(egg.tone);
+  el.innerHTML = eggSVG(egg.tone, egg.level);
   $("#adopt-theme").textContent = egg.theme;
   $("#adopt-desc").textContent = egg.desc + "，陪你一起成长";
   showView("#view-adopt");
@@ -339,7 +347,7 @@ function renderEggPage() {
   $("#egg-stage-theme").textContent = egg.theme;
   const stage = $("#stage-egg");
   stage.className = "stage-egg egg-tone-" + egg.tone;
-  stage.innerHTML = eggSVG(egg.tone);
+  stage.innerHTML = eggSVG(egg.tone, egg.level);
   renderCourseEntryDesc(egg);
   renderEggStats(egg);
 }
@@ -436,7 +444,7 @@ function dress() {
   egg.tone = (egg.tone % 6) + 1;
   const stage = $("#stage-egg");
   stage.className = "stage-egg egg-tone-" + egg.tone;
-  stage.innerHTML = eggSVG(egg.tone);
+  stage.innerHTML = eggSVG(egg.tone, egg.level);
   flash("换了个新装扮");
 }
 
@@ -473,7 +481,7 @@ function renderCourseEntryDesc(egg) {
   const cached = egg && courseCache.get(egg.id);
   const n = cached && cached.course && cached.course.lessons && cached.course.lessons.length;
   // 气泡上的副标题位置窄，文案从简：节数 + 学完能拿多少金币
-  $("#course-entry-desc").textContent = `${n || 6} 节课 · 学完 +${RULES.coinPerCourse} 金币`;
+  $("#course-entry-desc").textContent = `${n ? `${n} 篇帖子总结` : '收藏帖子总结'} · 学完 +${RULES.coinPerCourse} 金币`;
 }
 
 const REFS_TITLE = {
@@ -503,6 +511,23 @@ function renderCourse(course, meta) {
   const doc = $("#course-doc");
   const c = course || MOCK_COURSE;
   if (!c || !Array.isArray(c.lessons)) return renderCourseHint("课程内容为空，稍后再试试。");
+  if (c.format === 'post-summaries') {
+    let html = `<h1>${esc(c.title)}</h1><p class="course-note">${c.lessons.length} 篇${meta?.mock ? '示例' : '收藏'} · 根据知乎返回的摘要整理，未读取帖子全文。</p>`;
+    for (const post of c.lessons) {
+      html += `<section class="post-summary"><h2>${esc(post.name)}${post.refNumber ? ` <sup>[${post.refNumber}]</sup>` : ''}</h2>`;
+      html += `<p class="course-note">${post.summaryMode === 'ai' ? '摘要总结' : post.summaryMode === 'provided' ? '知乎提供的原摘要 · AI 总结暂不可用' : '该帖暂未返回摘要，暂无可总结内容。'}</p>`;
+      for (const paragraph of post.paragraphs || []) html += `<p>${esc(paragraph)}</p>`;
+      html += '</section>';
+    }
+    html += '<div class="refs"><h2>参考来源</h2><ol>';
+    for (const ref of c.refs || []) {
+      const url = safeUrl(ref.url);
+      if (url) html += `<li><a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(ref.title)}</a></li>`;
+    }
+    html += '</ol></div>';
+    doc.innerHTML = html;
+    return;
+  }
 
   let html = `<h1>${esc(c.title)}</h1>`;
   if (c.principle) html += `<p class="course-principle">排课原则：${esc(c.principle)}</p>`;
@@ -611,34 +636,33 @@ function renderLesson(i) {
   $("#btn-lesson-next").disabled = i >= lessons.length - 1;
 }
 
-async function openCourse() {
+async function openCourse(refresh = false) {
   const egg = state.currentEgg;
   if (!egg) return;
   showView("#view-course");
 
   const cached = courseCache.get(egg.id);
-  if (cached) return renderCourse(cached.course, cached.meta);
+  if (!refresh && cached) return renderCourse(cached.course, cached.meta);
 
   renderCourseHint(`正在整理「${egg.theme}」的课程…`);
   try {
-    const data = await api(`/api/eggs/${egg.id}/course`);
+    const data = await api(`/api/eggs/${egg.id}/course${refresh ? '?refresh=1' : ''}`);
     courseCache.set(egg.id, data);
+    if (state.currentEgg?.id !== egg.id || !$('#view-course').classList.contains('active')) return;
     renderCourse(data.course, data.meta);
     renderCourseEntryDesc(egg);
   } catch (err) {
     if (err.status === 401) return autoLogin();
     if (err.status) return renderCourseHint(err.message); // 后端明确拒绝 → 如实说明
-    // 后端不可达（离线打开 index.html）→ 示例课程顶上
-    renderCourse(MOCK_COURSE, { source: "mock" });
-    flash("后端未连接，展示的是示例课程");
+    renderCourseHint('暂时无法读取收藏总结，请稍后重试。');
   }
 }
 
 /* ---------- 视图 5：复习测验 ---------- */
-function renderQuiz() {
+function renderQuiz(questions = MOCK_QUIZ) {
   const body = $("#quiz-body");
   body.innerHTML = "";
-  MOCK_QUIZ.forEach((item, qi) => {
+  questions.forEach((item, qi) => {
     const div = document.createElement("div");
     div.className = "quiz-q";
     div.innerHTML = `<h3><span class="qnum">Q${qi + 1}.</span>${item.q}</h3>`;
@@ -660,7 +684,7 @@ function renderQuiz() {
   body.appendChild(score);
 }
 
-const quizState = { answered: new Set(), correct: 0 };
+const quizState = { answered: new Set(), answers: [], correct: 0, attemptId: null, settled: false, total: 0 };
 
 function pickAnswer(btn, item, qi) {
   if (quizState.answered.has(qi)) return;
@@ -668,6 +692,7 @@ function pickAnswer(btn, item, qi) {
   const opts = btn.parentElement.querySelectorAll(".quiz-opt");
   const correct = item.answer;
   const picked = parseInt(btn.dataset.opt, 10);
+  quizState.answers[qi] = picked;
   opts.forEach((b, oi) => {
     b.disabled = true;
     if (oi === correct) b.classList.add("correct");
@@ -680,11 +705,12 @@ function pickAnswer(btn, item, qi) {
 function updateQuizScore() {
   const el = $("#quiz-score");
   const done = quizState.answered.size;
-  if (done < MOCK_QUIZ.length) {
-    el.textContent = `已答 ${done} / ${MOCK_QUIZ.length}，答对 ${quizState.correct} 题`;
+  const total = quizState.total || MOCK_QUIZ.length;
+  if (done < total) {
+    el.textContent = `已答 ${done} / ${total}，答对 ${quizState.correct} 题`;
     return;
   }
-  el.textContent = `答对 ${quizState.correct} / ${MOCK_QUIZ.length} 题，结算中…`;
+  el.textContent = `答对 ${quizState.correct} / ${total} 题，结算中…`;
   submitQuiz(el);
 }
 
@@ -695,11 +721,11 @@ async function submitQuiz(el) {
   try {
     const data = await api(`/api/eggs/${egg.id}/quiz`, {
       method: "POST",
-      body: { correct: quizState.correct },
+      body: { attemptId: quizState.attemptId, answers: quizState.answers },
     });
     applyEgg(data.egg);
     renderEggStats(data.egg);
-    el.innerHTML = `答对 <b>${data.correct}</b> / ${MOCK_QUIZ.length} 题，+${data.gained} 金币`;
+    el.innerHTML = `答对 <b>${data.correct}</b> / ${quizState.total} 题，+${data.gained} 金币`;
   } catch (err) {
     if (err.status === 401) return autoLogin();
     if (err.status) { el.textContent = err.message; return; } // 用 textContent，不解析 HTML
@@ -712,9 +738,23 @@ async function submitQuiz(el) {
 
 function openQuiz() {
   quizState.answered = new Set();
+  quizState.answers = [];
   quizState.correct = 0;
-  renderQuiz();
+  quizState.attemptId = null;
+  quizState.settled = false;
+  quizState.total = 0;
   showView("#view-quiz");
+  const body = $("#quiz-body");
+  body.innerHTML = `<div class="quiz-score">正在准备与你的课程对应的复习题…</div>`;
+  api(`/api/eggs/${state.currentEgg.id}/quiz`).then(data => {
+    quizState.attemptId = data.attemptId;
+    quizState.total = data.questions.length;
+    renderQuiz(data.questions);
+  }).catch(err => {
+    if (err.status === 401) return autoLogin();
+    renderQuiz(MOCK_QUIZ);
+    flash("暂时无法连接，展示离线复习题");
+  });
 }
 
 /* ---------- 课程完成 ---------- */
@@ -766,7 +806,9 @@ function bindEvents() {
   });
   $$(".exchange-item").forEach(b => b.addEventListener("click", () => exchange(b.dataset.item)));
   $("#btn-enter").addEventListener("click", enterFromSplash);
-  $("#btn-todo-course").addEventListener("click", openCourse);
+  $("#btn-refresh-eggs").addEventListener("click", refreshEggs);
+  $("#btn-todo-course").addEventListener("click", () => openCourse());
+  $('#btn-refresh-course').addEventListener('click', () => openCourse(true));
   $("#btn-todo-review").addEventListener("click", openQuiz);
   $("#btn-todo-badge").addEventListener("click", () => togglePanel("badge"));
   $("#btn-todo-explore").addEventListener("click", () => togglePanel("explore"));
@@ -786,6 +828,14 @@ function bindEvents() {
 function setEggs(list) {
   state.eggs = list.map(buildEggState);
   renderBubbleCloud();
+  const evidence = $('#wall-evidence');
+  evidence.hidden = !list.length;
+  $('#wall-evidence-list').innerHTML = state.eggs.map(egg => {
+    const sample = egg.evidence[0];
+    const url = sample && safeUrl(sample.url);
+    const source = sample ? (url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(sample.title)}</a>` : esc(sample.title)) : '历史主题，尚无本次收藏依据';
+    return `<li><strong>${esc(egg.theme)}</strong> · ${egg.count} 条${egg.basis === 'title' ? ' · 按标题展示' : ''}<br>${source}</li>`;
+  }).join('');
 }
 
 /* 说明数据来源，不把示例数据说成用户的真实收藏 */
@@ -793,28 +843,60 @@ function updateWallSub(meta) {
   const el = document.querySelector(".wall-sub");
   if (!el || !meta) return;
   if (meta.source === "logged-out") {
-    el.textContent = "正在获取你的知乎身份…";
-  } else if (meta.source === "recommended") {
-    el.textContent = "你还没有收藏，先看看这些热门主题蛋";
-  } else if (meta.mock) {
-    el.textContent = "当前为示例收藏数据，接入知乎后会用你的真实收藏生成";
+    el.textContent = "当前浏览器尚未连接知乎";
+    $('#wall-connect').classList.remove('hidden');
+  } else if (meta.source === 'unknown') {
+    el.textContent = '旧版缓存，收藏来源尚未核验';
   } else {
-    el.textContent = "根据你的知乎收藏聚类而成，点一个气泡领养它";
+    const n = Number.isInteger(meta.collectionCount) ? meta.collectionCount : 0;
+    const mode = meta.clusterMode === 'none' ? '未生成新主题' : meta.clusterMode === 'llm' ? 'AI 聚类' : '标题规则分组';
+    const time = meta.updatedAt ? new Date(meta.updatedAt).toLocaleString('zh-CN', { hour12: false }) : '';
+    el.textContent = `${meta.mock ? '示例收藏' : '知乎公开范围近期收藏'} ${n} 条 · ${mode} · ${meta.cached ? '上次结果' : '本次更新'} ${time}`
+      + (meta.mock ? '' : '。最多读取 50 条，不包含完整收藏历史。')
+      + (meta.fallbackReason === 'llm_failed' ? ' AI 暂不可用，已使用标题规则。' : '')
+      + (meta.status === 'empty' ? ' 接口本次返回空列表，已领养的蛋继续保留。' : '');
+  }
+}
+
+let wallLoading = false;
+async function fetchWall(refresh) {
+  if (wallLoading) return;
+  wallLoading = true;
+  const btn = $('#btn-refresh-eggs');
+  const status = $('#wall-status');
+  btn.disabled = true;
+  btn.textContent = '正在读取收藏…';
+  status.textContent = '';
+  try {
+    const data = await api(refresh ? '/api/eggs?refresh=1' : '/api/eggs');
+    if (!Array.isArray(data?.eggs) || !data.meta) throw new Error('收藏响应格式异常');
+    setRules(data.meta.rules);
+    setEggs(data.eggs);
+    courseCache.clear();
+    updateWallSub(data.meta);
+    $('#wall-connect').classList.add('hidden');
+    if (refresh) status.textContent = data.meta.mock ? '已更新示例数据' : `本次读取 ${data.meta.collectionCount} 条近期收藏，生成 ${data.eggs.filter(e => e.basis !== 'historical').length} 个气泡。`;
+  } catch (err) {
+    if (err.status === 401) {
+      setEggs([]);
+      updateWallSub({ source: 'logged-out' });
+    } else {
+      status.textContent = `更新失败：${err.message}。${state.eggs.length ? '下方仍为上次结果，本次未更新。' : '未生成兴趣气泡。'}`;
+      $('#wall-connect').classList.remove('hidden');
+    }
+  } finally {
+    wallLoading = false;
+    btn.disabled = false;
+    btn.textContent = '↻ 重新读取收藏';
   }
 }
 
 async function loadEggs() {
-  try {
-    const data = await api("/api/eggs");
-    if (data.meta) setRules(data.meta.rules); // 用后端数值刷新展示文案
-    if (Array.isArray(data.eggs) && data.eggs.length) {
-      setEggs(data.eggs);
-      updateWallSub(data.meta);
-    }
-  } catch (err) {
-    if (err.status === 401) { updateWallSub({ source: "logged-out" }); return; }
-    // 其他情况（后端未启动、离线打开 index.html）→ 保持假数据蛋墙，不清空
-  }
+  return fetchWall(false);
+}
+
+async function refreshEggs() {
+  return fetchWall(true);
 }
 
 /* ---------- 开屏：EARTH ONLINE（design/7.png）----------
@@ -879,15 +961,14 @@ async function loadUser() {
     renderUser(await res.json());
   } catch {
     // 后端未启动（例如直接打开 index.html）→ 沿用假数据，保持 Step 1 体验
-    renderUser(MOCK_USER);
-    $("#btn-logout").classList.add("hidden");
+    renderUser(null);
   }
 }
 
 /* ---------- 初始化 ---------- */
 function init() {
   initSplash();        // 开屏（已看过则直接进蛋墙）
-  renderBubbleCloud(); // 先用假数据渲染，避免白屏
+  renderBubbleCloud();
   bindEvents();
   loadUser();
   loadEggs();

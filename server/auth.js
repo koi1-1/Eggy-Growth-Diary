@@ -71,6 +71,7 @@ function upgradeSession(sid, profile, tokenInfo) {
     name: profile.name,
     avatar: profile.avatar,
     accessToken: tokenInfo.accessToken || null,
+    mock: tokenInfo.mock === true,
     tokenExpiresAt: tokenInfo.expiresIn ? Date.now() + tokenInfo.expiresIn * 1000 : 0,
   });
 }

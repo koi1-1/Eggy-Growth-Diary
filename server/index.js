@@ -3,7 +3,7 @@
    同一服务提供静态前端 + JSON API */
 
 // 必须先加载 .env，再 require 读取环境变量的模块
-require('dotenv').config();
+if (process.env.NODE_ENV !== 'test') require('dotenv').config();
 
 const path = require('path');
 const express = require('express');
@@ -41,7 +41,7 @@ app.use((err, req, res, next) => {
 /* 直接运行时才监听端口；被测试 require 时只导出 app，避免抢端口 */
 if (require.main === module) {
   app.listen(PORT, () => {
-    console.log(`蛋养学习 → http://localhost:${PORT}`);
+    console.log(`蛋养学习 → http://127.0.0.1:${PORT}`);
     console.log(`知乎 OAuth：${auth.isOAuthConfigured() ? '已配置' : '未配置 → 登录走 Mock（仅开发用）'}`);
   });
 }

@@ -48,7 +48,14 @@
 
     <div class="wall-body">
       <h1 class="wall-title">你的兴趣蛋</h1>
-      <p class="wall-sub">根据你的知乎收藏聚类而成，点一个气泡领养它</p>
+      <p class="wall-sub" aria-live="polite">正在读取收藏来源…</p>
+      <button class="wall-refresh" id="btn-refresh-eggs" type="button">↻ 重新读取收藏</button>
+      <a class="wall-connect hidden" id="wall-connect" href="/api/auth/login">重新连接知乎</a>
+      <p class="wall-status" id="wall-status" role="status"></p>
+      <details class="wall-evidence" id="wall-evidence" hidden>
+        <summary>收藏与主题对应</summary>
+        <ul id="wall-evidence-list"></ul>
+      </details>
       <div class="bubble-cloud" id="bubble-cloud">
         <!-- 气泡由 JS 渲染 -->
       </div>
@@ -120,7 +127,7 @@
         <button class="todo-bubble todo-bubble--wide todo-bubble--course" id="btn-todo-course" type="button">
           <span class="todo-icon" aria-hidden="true">📖</span>
           <span class="todo-label">课程</span>
-          <span class="todo-sub" id="course-entry-desc">6 节课的学习计划</span>
+          <span class="todo-sub" id="course-entry-desc">收藏帖子总结</span>
         </button>
         <button class="todo-bubble todo-bubble--wide todo-bubble--review" id="btn-todo-review" type="button">
           <span class="todo-icon" aria-hidden="true">🧠</span>
@@ -156,8 +163,8 @@
   <section id="view-course" class="view">
     <header class="topbar">
       <button class="back-btn" data-back="egg">‹ 返回</button>
-      <span class="topbar-title">课程详情</span>
-      <span class="topbar-spacer"></span>
+      <span class="topbar-title">收藏总结</span>
+      <button class="coin-exchange" id="btn-refresh-course" type="button" title="重新整理收藏" aria-label="重新整理收藏">↻</button>
     </header>
     <div class="doc" id="course-doc">
       <!-- 课程总览（课卡网格）由 JS 渲染 -->

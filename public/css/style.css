@@ -315,6 +315,12 @@ body {
   gap: var(--space-4) var(--space-2);
   padding: var(--space-4) 0;
 }
+
+.wall-refresh { align-self:center; margin:8px auto 0; padding:6px 12px; border:2px solid var(--px-ink); background:var(--px-surface); color:var(--px-ink); font:inherit; font-size:12px; cursor:pointer; box-shadow:var(--shadow-px-2); }
+.wall-refresh:hover { background:var(--px-surface-3); }
+.wall-refresh:active { transform:translate(2px,2px); box-shadow:none; }
+.wall-refresh:disabled { opacity:.6; cursor:wait; }
+.wall-refresh:focus-visible { outline:var(--px-bw-thin) solid var(--px-gold); outline-offset:3px; }
 /* 气泡 = 像素封蜡圆：平涂 tone 色 + 厚描边 + 硬投影；深色文字保证对比度 */
 .bubble {
   /* --size：气泡直径；--offset：纵向错落 */
@@ -344,7 +350,14 @@ body {
   width: 10px; height: 10px; background: rgba(255, 255, 255, .6);
 }
 .bubble-icon { font-size: var(--icon-fs, 20px); line-height: 1; }
-.bubble-text { text-shadow: 1px 1px 0 rgba(255, 255, 255, .55); }
+.bubble-text { text-shadow: 1px 1px 0 rgba(255, 255, 255, .55); max-width:100%; overflow-wrap:anywhere; }
+.bubble-count { font-size:10px; font-weight:400; }
+.bubble:has(.bubble-text) { flex-shrink:0; }
+.wall-status, .wall-evidence, .wall-connect { font-size:12px; line-height:1.6; overflow-wrap:anywhere; margin-top:12px; }
+.wall-evidence ul { padding-left:20px; }
+.wall-evidence li { margin:8px 0; }
+.wall-evidence summary { cursor:pointer; }
+.wall-evidence a, .wall-connect { color:var(--px-ink); text-decoration:underline; }
 .bubble--lg { --size: 132px; --fs: 14px; --icon-fs: 26px; }
 .bubble--md { --size: 106px; --fs: 13px; --icon-fs: 22px; }
 .bubble--sm { --size: 84px;  --fs: 12px; --icon-fs: 18px; }
@@ -691,6 +704,10 @@ body {
 .doc .refs h3 { margin: 0 0 var(--space-2); font-size: 13px; color: var(--px-text-3); }
 .doc .refs a { display: block; margin-bottom: var(--space-2); font-size: 13px; word-break: break-all; }
 .doc .course-note { font-size: 13px; line-height: 1.6; color: var(--px-text-3); }
+.post-summary { padding:20px 0; border-bottom:1px solid var(--px-text-3); overflow-wrap:anywhere; }
+.post-summary h2 { font-size:18px; line-height:1.6; }
+.post-summary p { font-size:14px; line-height:1.9; white-space:pre-wrap; }
+.post-summary sup { font-size:11px; }
 
 .doc-foot {
   padding: var(--space-3) var(--space-4) var(--space-6);
